@@ -1,0 +1,156 @@
+﻿@page "/cifs"
+
+@inject IConfiguration _config;
+
+<PageTitle>CIFS</PageTitle>
+
+<MudText Class="ma-8">Share path is: @_sharePath</MudText>
+
+@if (!TreeItems.Any())
+{
+    <MudText Class="ma-8">No files</MudText>
+}
+
+<MudTreeView Items="@TreeItems" Hover="true" Width="100%">
+    <ItemTemplate Context="item">
+        <MudTreeViewItem Items="@item.TreeItems" Icon="@item.Icon">
+            <BodyContent>
+                <div class="d-flex justify-space-between flex-grow-1 gap-4">
+                    <MudText Class="mt-3">@item.FileName</MudText>
+                    <MudText Class="mt-3">@item.Length bytes</MudText>
+                    <MudText Class="mt-3">@item.Owner</MudText>
+                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Medium" Color="Color.Inherit"
+                                   OnClick="@(() => DeleteFile(item))"/>
+                </div>
+            </BodyContent>
+        </MudTreeViewItem>
+    </ItemTemplate>
+</MudTreeView>
+
+<MudFileUpload T="IBrowserFile" FilesChanged="UploadFile">
+    <ButtonTemplate>
+        <MudButton HtmlTag="label"
+                   Variant="Variant.Filled"
+                   Color="Color.Primary"
+                   StartIcon="@Icons.Material.Filled.CloudUpload"
+                   for="@context.Id"
+                   Class="ma-8">
+            Upload File
+        </MudButton>
+    </ButtonTemplate>
+</MudFileUpload>
+
+@code
+{
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationState { get; set; }
+    
+    private HashSet<TreeItemData> TreeItems { get; } = [];
+    private string? _sharePath;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _sharePath = _config["SharePath"];
+
+        if (string.IsNullOrWhiteSpace(_sharePath))
+            throw new NullReferenceException(nameof(_sharePath));
+        
+        if (AuthenticationState is null)
+            throw new NullReferenceException(nameof(AuthenticationState));
+
+        var state = await AuthenticationState;
+        var user = (WindowsIdentity)state.User.Identity!;
+
+        WindowsIdentity.RunImpersonated(user.AccessToken, () =>
+        {
+            // get initial listing
+            foreach (var file in GetFileData(_sharePath))
+                TreeItems.Add(file);
+        });
+    }
+
+    private static IEnumerable<TreeItemData> GetFileData(string path)
+    {
+        var files = Directory.GetFiles(path);
+
+        foreach (var file in files)
+        {
+            var info = new FileInfo(file);
+            var owner = info.GetAccessControl().GetOwner(typeof(NTAccount));
+            
+            yield return new TreeItemData(info.Name, info.FullName, info.Length, owner?.Value);
+        }
+    }
+    
+    public class TreeItemData
+    {
+        public string Icon { get; }
+        public string FileName { get; }
+        public string FilePath { get; }
+        public long Length { get; }
+        public string? Owner { get; }
+
+        public HashSet<TreeItemData> TreeItems { get; } = [];
+
+        public TreeItemData(string fileName, string filePath, long length, string? owner, string icon = Icons.Material.Filled.InsertDriveFile)
+        {
+            FileName = fileName;
+            FilePath = filePath;
+            Icon = icon;
+            Length = length;
+            Owner = owner;
+        }
+    }
+
+    private async Task UploadFile(IBrowserFile? file)
+    {
+        if (file is null)
+            return;
+        
+        if (AuthenticationState is null)
+            throw new NullReferenceException(nameof(AuthenticationState));
+        
+        if (string.IsNullOrWhiteSpace(_sharePath))
+            throw new NullReferenceException(nameof(_sharePath));
+
+        var state = await AuthenticationState;
+        var user = (WindowsIdentity)state.User.Identity!;
+
+        await WindowsIdentity.RunImpersonatedAsync(user.AccessToken, async () =>
+        {
+            var path = Path.Combine(_sharePath, file.Name);
+        
+            await using var dst = File.Create(path);
+            await using var src = file.OpenReadStream();
+
+            await src.CopyToAsync(dst);
+            await dst.FlushAsync();
+            
+            var info = new FileInfo(path);
+            var owner = info.GetAccessControl().GetOwner(typeof(NTAccount));
+        
+            // add to tree
+            TreeItems.Add(new TreeItemData(file.Name, info.FullName, info.Length, owner?.Value));
+        });
+    }
+
+    private async Task DeleteFile(TreeItemData item)
+    {
+        if (AuthenticationState is null)
+            throw new NullReferenceException(nameof(AuthenticationState));
+
+        var state = await AuthenticationState;
+        var user = (WindowsIdentity)state.User.Identity!;
+
+        WindowsIdentity.RunImpersonated(user.AccessToken, () =>
+        {
+            if (!File.Exists(item.FilePath))
+                return;
+
+            File.Delete(item.FilePath);
+
+            // remove from tree
+            TreeItems.Remove(item);
+        });
+    }
+}

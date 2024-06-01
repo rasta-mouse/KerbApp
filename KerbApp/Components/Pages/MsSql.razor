@@ -1,0 +1,81 @@
+﻿@page "/mssql"
+@using Microsoft.EntityFrameworkCore
+
+@inject AppDbContext _db;
+@inject IConfiguration _config;
+
+<PageTitle>MSSQL</PageTitle>
+
+<MudText Class="ma-8">Connection string is: @_connectionString</MudText>
+
+<MudTextField
+    Class="ma-8"
+    @bind-Value="@_queryText"
+    HelperText="SQL Query"
+    Variant="Variant.Text" />
+
+<MudButton 
+    Color="Color.Primary"
+    Variant="Variant.Filled"
+    Class="ma-8"
+    Disabled="@_disabled"
+    OnClick="SubmitQuery">Submit Query</MudButton>
+
+<MudText Class="ma-8">@_result</MudText>
+
+@code
+{
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationState { get; set; }
+    
+    private string? _connectionString;
+    private bool _disabled;
+    private string? _queryText = "SELECT SYSTEM_USER";
+    private string? _result;
+
+    protected override void OnInitialized()
+    {
+        _connectionString = _config.GetConnectionString("Default");
+    }
+
+    private async Task SubmitQuery()
+    {
+        if (AuthenticationState is null)
+            throw new NullReferenceException(nameof(AuthenticationState));
+
+        if (string.IsNullOrWhiteSpace(_connectionString))
+            throw new NullReferenceException(nameof(_connectionString));
+        
+        if (string.IsNullOrWhiteSpace(_queryText))
+            return;
+
+        var state = await AuthenticationState;
+        var user = (WindowsIdentity)state.User.Identity!;
+
+        await WindowsIdentity.RunImpersonatedAsync(user.AccessToken, async () =>
+        {
+            try
+            {
+                _disabled = true;
+
+                var query = _db.Database
+                    .SqlQueryRaw<string>(_queryText)
+                    .AsSingleQuery();
+
+                var results= await query.ToListAsync();
+
+                _result = string.Join(Environment.NewLine, results);
+
+                await InvokeAsync(StateHasChanged);
+            }
+            catch (Exception e)
+            {
+                _result = e.Message;
+            }
+            finally
+            {
+                _disabled = false;
+            }
+        });
+    }
+}

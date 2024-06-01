@@ -1,0 +1,27 @@
+﻿@page "/"
+
+<PageTitle>Home</PageTitle>
+<MudText Class="ma-5">You are authenticated as @_userName.</MudText>
+
+@code {
+
+    private string? _userName = "-";
+    
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (AuthenticationState is null)
+            return;
+
+        var state = await AuthenticationState;
+        var user = (WindowsIdentity)state.User.Identity!;
+
+        WindowsIdentity.RunImpersonated(user.AccessToken, () =>
+        {
+            var impersonated = WindowsIdentity.GetCurrent();
+            _userName = impersonated.Name;
+        });
+    }
+}
